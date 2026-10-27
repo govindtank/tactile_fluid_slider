@@ -1,0 +1,28 @@
+name: tactile_fluid_slider
+description: A tactile fluid slider for Flutter with elastic rubber-band squash physics, stepped haptic detents, and floating value bubbles.
+version: 1.0.0
+homepage: https://github.com/govindtank/tactile_fluid_slider
+repository: https://github.com/govindtank/tactile_fluid_slider
+issue_tracker: https://github.com/govindtank/tactile_fluid_slider/issues
+
+topics:
+  - slider
+  - ui
+  - animation
+  - haptics
+  - control-center
+
+environment:
+  sdk: ">=3.2.0 <4.0.0"
+  flutter: ">=3.16.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
