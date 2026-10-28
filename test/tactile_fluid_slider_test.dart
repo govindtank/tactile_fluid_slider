@@ -16,7 +16,8 @@ void main() {
   });
 
   group('TactileFluidSlider Widget Tests', () {
-    testWidgets('renders horizontal slider with embedded percentage',
+    testWidgets(
+        'renders horizontal slider with dual-layer inverted text masking',
         (tester) async {
       double currentValue = 0.5;
 
@@ -36,10 +37,11 @@ void main() {
         ),
       );
 
-      expect(find.text('50%'), findsOneWidget);
+      // Dual-layer text mask renders 2 text elements (unfilled track + clipped active fill)
+      expect(find.text('50%'), findsNWidgets(2));
     });
 
-    testWidgets('updates value on drag gesture', (tester) async {
+    testWidgets('updates value on drag or seek gesture', (tester) async {
       double currentValue = 0.2;
 
       await tester.pumpWidget(
@@ -48,9 +50,16 @@ void main() {
             body: Center(
               child: SizedBox(
                 width: 200,
-                child: TactileFluidSlider(
-                  value: currentValue,
-                  onChanged: (val) => currentValue = val,
+                height: 56,
+                child: StatefulBuilder(
+                  builder: (context, setState) {
+                    return TactileFluidSlider(
+                      value: currentValue,
+                      onChanged: (val) {
+                        setState(() => currentValue = val);
+                      },
+                    );
+                  },
                 ),
               ),
             ),
@@ -59,13 +68,8 @@ void main() {
       );
 
       final sliderFinder = find.byType(TactileFluidSlider);
-      final center = tester.getCenter(sliderFinder);
-
-      // Drag rightward
-      final gesture = await tester.startGesture(center);
-      await gesture.moveBy(const Offset(60, 0));
-      await gesture.up();
-      await tester.pump();
+      await tester.drag(sliderFinder, const Offset(60, 0));
+      await tester.pumpAndSettle();
 
       expect(currentValue, greaterThan(0.2));
     });
@@ -89,8 +93,8 @@ void main() {
         ),
       );
 
-      expect(find.text('80 nits'), findsOneWidget);
-      expect(find.byIcon(Icons.wb_sunny_rounded), findsOneWidget);
+      expect(find.text('80 nits'), findsWidgets);
+      expect(find.byIcon(Icons.wb_sunny_rounded), findsWidgets);
     });
   });
 }

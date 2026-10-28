@@ -2,8 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../models/slider_config.dart';
 
-/// A modern, tactile thick fluid slider with boundary rubber-band squash physics,
-/// stepped haptic detents, and floating value bubbles.
+/// A modern, tactile thick fluid slider with dual-layer inverted text masking,
+/// boundary rubber-band squash physics, stepped haptic detents, tap-to-seek,
+/// and fine-scrubbing sensitivity.
 class TactileFluidSlider extends StatefulWidget {
   const TactileFluidSlider({
     super.key,
@@ -13,6 +14,7 @@ class TactileFluidSlider extends StatefulWidget {
     this.onChangeEnd,
     this.min = 0.0,
     this.max = 1.0,
+    this.defaultValue,
     this.orientation = Axis.horizontal,
     this.valueDisplayMode = ValueDisplayMode.embedded,
     this.valueFormatter,
@@ -20,6 +22,9 @@ class TactileFluidSlider extends StatefulWidget {
     this.icon,
     this.theme,
     this.enableHaptics = true,
+    this.enableTapToSeek = true,
+    this.enableDoubleTapReset = true,
+    this.enableFineScrubbing = true,
   })  : assert(min <= max, 'min must be less than or equal to max'),
         assert(
             value >= min && value <= max, 'value must be between min and max');
@@ -30,6 +35,7 @@ class TactileFluidSlider extends StatefulWidget {
   final ValueChanged<double>? onChangeEnd;
   final double min;
   final double max;
+  final double? defaultValue;
   final Axis orientation;
   final ValueDisplayMode valueDisplayMode;
   final String Function(double value)? valueFormatter;
@@ -37,19 +43,28 @@ class TactileFluidSlider extends StatefulWidget {
   final Widget? icon;
   final TactileSliderTheme? theme;
   final bool enableHaptics;
+  final bool enableTapToSeek;
+  final bool enableDoubleTapReset;
+  final bool enableFineScrubbing;
 
   @override
   State<TactileFluidSlider> createState() => _TactileFluidSliderState();
 }
 
 class _TactileFluidSliderState extends State<TactileFluidSlider>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   late AnimationController _recoilController;
   late Animation<double> _recoilAnimation;
 
+  late AnimationController _seekController;
+  late Animation<double> _seekAnimation;
+
   double _overscroll = 0.0;
   bool _isDragging = false;
+  bool _isFineScrubbing = false;
   double _lastDetentCrossed = -1.0;
+  Offset _dragStartPos = Offset.zero;
+  double _dragStartValue = 0.0;
 
   @override
   void initState() {
@@ -62,11 +77,17 @@ class _TactileFluidSliderState extends State<TactileFluidSlider>
           _overscroll = _recoilAnimation.value;
         });
       });
+
+    _seekController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 220),
+    );
   }
 
   @override
   void dispose() {
     _recoilController.dispose();
+    _seekController.dispose();
     super.dispose();
   }
 
@@ -85,17 +106,78 @@ class _TactileFluidSliderState extends State<TactileFluidSlider>
 
   void _handleDragStart(Offset localPos, Size size) {
     _recoilController.stop();
-    setState(() => _isDragging = true);
+    _seekController.stop();
+    setState(() {
+      _isDragging = true;
+      _isFineScrubbing = false;
+      _dragStartPos = localPos;
+      _dragStartValue = widget.value;
+    });
     widget.onChangeStart?.call(widget.value);
-    _updateValue(localPos, size);
+    _handleDragUpdate(localPos, size);
   }
 
   void _handleDragUpdate(Offset localPos, Size size) {
-    _updateValue(localPos, size);
+    final isHorizontal = widget.orientation == Axis.horizontal;
+    final totalLength = isHorizontal ? size.width : size.height;
+
+    // Check perpendicular drag distance for fine scrubbing mode
+    if (widget.enableFineScrubbing) {
+      final perpDistance = isHorizontal
+          ? (localPos.dy - _dragStartPos.dy).abs()
+          : (localPos.dx - _dragStartPos.dx).abs();
+
+      final fine = perpDistance > 45.0;
+      if (fine != _isFineScrubbing) {
+        setState(() => _isFineScrubbing = fine);
+        if (widget.enableHaptics) HapticFeedback.lightImpact();
+      }
+    }
+
+    final currentPos = isHorizontal ? localPos.dx : (size.height - localPos.dy);
+    double fraction;
+
+    if (_isFineScrubbing) {
+      // Fine-scrubbing applies 0.35x speed delta from start position
+      final deltaPos = isHorizontal
+          ? (localPos.dx - _dragStartPos.dx)
+          : (_dragStartPos.dy - localPos.dy);
+      final fineDeltaFraction = (deltaPos / totalLength) * 0.35;
+      final startFraction =
+          (_dragStartValue - widget.min) / (widget.max - widget.min);
+      fraction = (startFraction + fineDeltaFraction).clamp(0.0, 1.0);
+      _overscroll = 0.0;
+    } else {
+      fraction = currentPos / totalLength;
+
+      if (fraction < 0.0) {
+        final rawOverscroll = currentPos;
+        _overscroll = rawOverscroll / (1.0 + rawOverscroll.abs() * 0.015);
+        fraction = 0.0;
+      } else if (fraction > 1.0) {
+        final rawOverscroll = currentPos - totalLength;
+        _overscroll = rawOverscroll / (1.0 + rawOverscroll.abs() * 0.015);
+        fraction = 1.0;
+      } else {
+        _overscroll = 0.0;
+      }
+    }
+
+    final newValue = widget.min + fraction * (widget.max - widget.min);
+    final clamped = newValue.clamp(widget.min, widget.max);
+
+    _triggerHapticIfCrossed(fraction);
+
+    if (clamped != widget.value) {
+      widget.onChanged(clamped);
+    }
   }
 
   void _handleDragEnd() {
-    setState(() => _isDragging = false);
+    setState(() {
+      _isDragging = false;
+      _isFineScrubbing = false;
+    });
     widget.onChangeEnd?.call(widget.value);
 
     if (_overscroll != 0.0) {
@@ -112,34 +194,39 @@ class _TactileFluidSliderState extends State<TactileFluidSlider>
     }
   }
 
-  void _updateValue(Offset localPos, Size size) {
+  void _handleTapToSeek(Offset localPos, Size size) {
+    if (!widget.enableTapToSeek || _isDragging) return;
+
     final isHorizontal = widget.orientation == Axis.horizontal;
     final totalLength = isHorizontal ? size.width : size.height;
-    final currentPos = isHorizontal ? localPos.dx : (size.height - localPos.dy);
+    final targetPos = isHorizontal ? localPos.dx : (size.height - localPos.dy);
+    final fraction = (targetPos / totalLength).clamp(0.0, 1.0);
+    final targetValue = widget.min + fraction * (widget.max - widget.min);
 
-    double fraction = currentPos / totalLength;
+    final startVal = widget.value;
+    _seekAnimation = Tween<double>(begin: startVal, end: targetValue).animate(
+      CurvedAnimation(parent: _seekController, curve: Curves.easeOutCubic),
+    )..addListener(() {
+        widget.onChanged(_seekAnimation.value);
+      });
 
-    if (fraction < 0.0) {
-      // Rubber-band resistance curve
-      final rawOverscroll = currentPos;
-      _overscroll = rawOverscroll / (1.0 + rawOverscroll.abs() * 0.015);
-      fraction = 0.0;
-    } else if (fraction > 1.0) {
-      final rawOverscroll = currentPos - totalLength;
-      _overscroll = rawOverscroll / (1.0 + rawOverscroll.abs() * 0.015);
-      fraction = 1.0;
-    } else {
-      _overscroll = 0.0;
-    }
+    if (widget.enableHaptics) HapticFeedback.selectionClick();
+    _seekController.forward(from: 0.0);
+  }
 
-    final newValue = widget.min + fraction * (widget.max - widget.min);
-    final clamped = newValue.clamp(widget.min, widget.max);
+  void _handleDoubleTapReset() {
+    if (!widget.enableDoubleTapReset) return;
+    final resetVal = widget.defaultValue ?? widget.min;
 
-    _triggerHapticIfCrossed(fraction);
+    final startVal = widget.value;
+    _seekAnimation = Tween<double>(begin: startVal, end: resetVal).animate(
+      CurvedAnimation(parent: _seekController, curve: Curves.easeOutBack),
+    )..addListener(() {
+        widget.onChanged(_seekAnimation.value);
+      });
 
-    if (clamped != widget.value) {
-      widget.onChanged(clamped);
-    }
+    if (widget.enableHaptics) HapticFeedback.mediumImpact();
+    _seekController.forward(from: 0.0);
   }
 
   String _formatValue(double val) {
@@ -149,6 +236,38 @@ class _TactileFluidSliderState extends State<TactileFluidSlider>
     final percentage =
         ((val - widget.min) / (widget.max - widget.min) * 100).round();
     return '$percentage%';
+  }
+
+  Widget _buildContentLayer({
+    required Color textColor,
+    required Color iconColor,
+    required String text,
+    required String? fontFamily,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          if (widget.icon != null)
+            IconTheme(
+              data: IconThemeData(color: iconColor, size: 22.0),
+              child: widget.icon!,
+            ),
+          if (widget.valueDisplayMode == ValueDisplayMode.embedded ||
+              widget.valueDisplayMode == ValueDisplayMode.both)
+            Text(
+              text,
+              style: TextStyle(
+                fontSize: 14.0,
+                fontWeight: FontWeight.w700,
+                color: textColor,
+                fontFamily: fontFamily,
+              ),
+            ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -169,28 +288,50 @@ class _TactileFluidSliderState extends State<TactileFluidSlider>
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        final width =
+        final baseWidth =
             isHorizontal ? constraints.maxWidth : activeTheme.trackWidth;
-        final height =
+        final baseHeight =
             isHorizontal ? activeTheme.trackHeight : constraints.maxHeight;
+
+        // Subtle track expansion on active dragging
+        final expandDelta =
+            (_isDragging && activeTheme.expandOnDrag) ? 4.0 : 0.0;
+        final width = isHorizontal ? baseWidth : (baseWidth + expandDelta);
+        final height = isHorizontal ? (baseHeight + expandDelta) : baseHeight;
 
         final fillLength = (isHorizontal ? width : height) * normValue;
 
         return GestureDetector(
-          onPanStart: (d) =>
-              _handleDragStart(d.localPosition, Size(width, height)),
-          onPanUpdate: (d) =>
-              _handleDragUpdate(d.localPosition, Size(width, height)),
-          onPanEnd: (_) => _handleDragEnd(),
-          onPanCancel: () => _handleDragEnd(),
+          onTapDown: (d) =>
+              _handleTapToSeek(d.localPosition, Size(width, height)),
+          onTapUp: (d) =>
+              _handleTapToSeek(d.localPosition, Size(width, height)),
+          onDoubleTap: _handleDoubleTapReset,
+          onHorizontalDragStart: isHorizontal
+              ? (d) => _handleDragStart(d.localPosition, Size(width, height))
+              : null,
+          onHorizontalDragUpdate: isHorizontal
+              ? (d) => _handleDragUpdate(d.localPosition, Size(width, height))
+              : null,
+          onHorizontalDragEnd: isHorizontal ? (_) => _handleDragEnd() : null,
+          onHorizontalDragCancel: isHorizontal ? () => _handleDragEnd() : null,
+          onVerticalDragStart: !isHorizontal
+              ? (d) => _handleDragStart(d.localPosition, Size(width, height))
+              : null,
+          onVerticalDragUpdate: !isHorizontal
+              ? (d) => _handleDragUpdate(d.localPosition, Size(width, height))
+              : null,
+          onVerticalDragEnd: !isHorizontal ? (_) => _handleDragEnd() : null,
+          onVerticalDragCancel: !isHorizontal ? () => _handleDragEnd() : null,
           child: Transform.scale(
             scaleX: isHorizontal ? stretchScale : squashScale,
             scaleY: isHorizontal ? squashScale : stretchScale,
             child: Stack(
               clipBehavior: Clip.none,
               children: [
-                // Track Container
-                Container(
+                // 1. Base Track Container
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 150),
                   width: width,
                   height: height,
                   decoration: BoxDecoration(
@@ -201,62 +342,78 @@ class _TactileFluidSliderState extends State<TactileFluidSlider>
                   ),
                   clipBehavior: Clip.antiAlias,
                   child: Stack(
-                    alignment: isHorizontal
-                        ? Alignment.centerLeft
-                        : Alignment.bottomCenter,
                     children: [
-                      // Active Filled Bar
-                      AnimatedContainer(
-                        duration: _isDragging
-                            ? Duration.zero
-                            : const Duration(milliseconds: 100),
-                        width: isHorizontal ? fillLength : width,
-                        height: isHorizontal ? height : fillLength,
-                        decoration: BoxDecoration(
-                          color: activeTheme.activeColor,
-                          borderRadius:
-                              BorderRadius.circular(activeTheme.borderRadius),
+                      // Layer A: Unfilled Content (resting on background track)
+                      SizedBox(
+                        width: width,
+                        height: height,
+                        child: _buildContentLayer(
+                          textColor: activeTheme.effectiveUnfilledTextColor,
+                          iconColor: activeTheme.effectiveUnfilledTextColor,
+                          text: formattedText,
+                          fontFamily: activeTheme.fontFamily,
                         ),
                       ),
-                      // Embedded Label & Icon
-                      Padding(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 16.0, vertical: 12.0),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            if (widget.icon != null) widget.icon!,
-                            if (widget.valueDisplayMode ==
-                                    ValueDisplayMode.embedded ||
-                                widget.valueDisplayMode ==
-                                    ValueDisplayMode.both)
-                              Text(
-                                formattedText,
-                                style: TextStyle(
-                                  fontSize: 14.0,
-                                  fontWeight: FontWeight.w700,
-                                  color: normValue > 0.5
-                                      ? activeTheme.textColor
-                                      : Colors.white,
-                                  fontFamily: activeTheme.fontFamily,
+
+                      // Layer B: Filled Active Bar with Inverted Text Mask
+                      Align(
+                        alignment: isHorizontal
+                            ? Alignment.centerLeft
+                            : Alignment.bottomCenter,
+                        child: ClipRRect(
+                          borderRadius:
+                              BorderRadius.circular(activeTheme.borderRadius),
+                          child: SizedBox(
+                            width: isHorizontal ? fillLength : width,
+                            height: isHorizontal ? height : fillLength,
+                            child: Stack(
+                              clipBehavior: Clip.none,
+                              children: [
+                                // Fill Color / Gradient
+                                Positioned.fill(
+                                  child: Container(
+                                    decoration: BoxDecoration(
+                                      color: activeTheme.activeGradient == null
+                                          ? activeTheme.activeColor
+                                          : null,
+                                      gradient: activeTheme.activeGradient,
+                                    ),
+                                  ),
                                 ),
-                              ),
-                          ],
+                                // Inverted Mask Content positioned at track origin
+                                Positioned(
+                                  left: 0,
+                                  bottom: 0,
+                                  width: width,
+                                  height: height,
+                                  child: _buildContentLayer(
+                                    textColor:
+                                        activeTheme.effectiveFilledTextColor,
+                                    iconColor:
+                                        activeTheme.effectiveFilledTextColor,
+                                    text: formattedText,
+                                    fontFamily: activeTheme.fontFamily,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
                         ),
                       ),
                     ],
                   ),
                 ),
-                // Floating Bubble HUD
+
+                // 2. Floating Bubble HUD
                 if (_isDragging &&
                     (widget.valueDisplayMode == ValueDisplayMode.floating ||
                         widget.valueDisplayMode == ValueDisplayMode.both))
                   Positioned(
                     left: isHorizontal
-                        ? (fillLength - 24.0).clamp(0.0, width - 48.0)
-                        : -60.0,
+                        ? (fillLength - 36.0).clamp(0.0, width - 72.0)
+                        : -85.0,
                     top: isHorizontal
-                        ? -44.0
+                        ? -48.0
                         : (height - fillLength - 20.0)
                             .clamp(0.0, height - 36.0),
                     child: Container(
@@ -272,14 +429,30 @@ class _TactileFluidSliderState extends State<TactileFluidSlider>
                             offset: Offset(0, 3),
                           ),
                         ],
+                        border: _isFineScrubbing
+                            ? Border.all(
+                                color: const Color(0xFF38BDF8), width: 1.2)
+                            : null,
                       ),
-                      child: Text(
-                        formattedText,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 12.0,
-                          fontWeight: FontWeight.bold,
-                        ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (_isFineScrubbing) ...[
+                            const Icon(Icons.precision_manufacturing_rounded,
+                                size: 12, color: Color(0xFF38BDF8)),
+                            const SizedBox(width: 4),
+                          ],
+                          Text(
+                            _isFineScrubbing
+                                ? 'Fine: $formattedText'
+                                : formattedText,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 12.0,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ),

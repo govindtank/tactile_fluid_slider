@@ -5,7 +5,7 @@ enum ValueDisplayMode {
   /// No value text is displayed.
   none,
 
-  /// Displayed inside the filled slider track.
+  /// Displayed inside the slider track with inverted dual-layer text clipping.
   embedded,
 
   /// Floats above or beside the touch point during dragging.
@@ -23,9 +23,13 @@ class TactileSliderTheme {
     required this.activeColor,
     required this.textColor,
     required this.bubbleColor,
-    this.borderRadius = 16.0,
-    this.trackHeight = 52.0,
-    this.trackWidth = 52.0,
+    this.unfilledTextColor,
+    this.filledTextColor,
+    this.activeGradient,
+    this.borderRadius = 18.0,
+    this.trackHeight = 56.0,
+    this.trackWidth = 56.0,
+    this.expandOnDrag = true,
     this.fontFamily,
     this.boxShadow = const [
       BoxShadow(
@@ -39,12 +43,24 @@ class TactileSliderTheme {
   final Color trackColor;
   final Color activeColor;
   final Color textColor;
+  final Color? unfilledTextColor;
+  final Color? filledTextColor;
+  final Gradient? activeGradient;
   final Color bubbleColor;
   final double borderRadius;
   final double trackHeight;
   final double trackWidth;
+  final bool expandOnDrag;
   final String? fontFamily;
   final List<BoxShadow> boxShadow;
+
+  Color get effectiveUnfilledTextColor =>
+      unfilledTextColor ??
+      (ThemeData.estimateBrightnessForColor(trackColor) == Brightness.dark
+          ? Colors.white70
+          : Colors.black87);
+
+  Color get effectiveFilledTextColor => filledTextColor ?? textColor;
 
   /// Default iOS 18 Control Center style dark theme.
   factory TactileSliderTheme.dark() {
@@ -52,6 +68,8 @@ class TactileSliderTheme {
       trackColor: Color(0xFF27272A),
       activeColor: Color(0xFFFAFAFA),
       textColor: Color(0xFF18181B),
+      unfilledTextColor: Color(0xFFA1A1AA),
+      filledTextColor: Color(0xFF18181B),
       bubbleColor: Color(0xFF3F3F46),
       borderRadius: 18.0,
       trackHeight: 56.0,
@@ -65,6 +83,8 @@ class TactileSliderTheme {
       trackColor: Color(0xFFE4E4E7),
       activeColor: Color(0xFF09090B),
       textColor: Colors.white,
+      unfilledTextColor: Color(0xFF71717A),
+      filledTextColor: Colors.white,
       bubbleColor: Color(0xFF09090B),
       borderRadius: 18.0,
       trackHeight: 56.0,
@@ -77,7 +97,12 @@ class TactileSliderTheme {
     return const TactileSliderTheme(
       trackColor: Color(0xFF1C1917),
       activeColor: Color(0xFFF59E0B),
+      activeGradient: LinearGradient(
+        colors: [Color(0xFFD97706), Color(0xFFFBBF24)],
+      ),
       textColor: Color(0xFF1C1917),
+      unfilledTextColor: Color(0xFFA8A29E),
+      filledTextColor: Color(0xFF1C1917),
       bubbleColor: Color(0xFF292524),
       borderRadius: 20.0,
       trackHeight: 56.0,
